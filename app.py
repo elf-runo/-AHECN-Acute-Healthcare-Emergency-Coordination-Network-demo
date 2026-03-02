@@ -1,11 +1,9 @@
 import streamlit as st
 import pandas as pd
 import altair as alt
-import scoring_engine, clinical_engine, routing_engine, analytics_engine
-st.sidebar.write("scoring_engine:", scoring_engine.__file__)
-st.sidebar.write("clinical_engine:", clinical_engine.__file__)
-st.sidebar.write("routing_engine:", routing_engine.__file__)
-st.sidebar.write("analytics_engine:", analytics_engine.__file__)
+import inspect, scoring_engine
+st.sidebar.write("scoring_engine path:", scoring_engine.__file__)
+st.sidebar.write("calculate_facility_score sig:", str(inspect.signature(scoring_engine.calculate_facility_score)))
 
 from utils import load_icd_catalogue, load_facilities
 from clinical_engine import validated_triage_decision
@@ -91,13 +89,14 @@ for _, row in facilities_df.iterrows():
         required_caps=required_caps,
         eta=eta,
         triage_color=triage_color,
-        severity_index=meta.get("severity_index", 0.0),
+        severity_index=float((meta or {}).get("severity_index", 0.0) or 0.0),
         case_type=bundle,  # aligns with specialties dict keys if you add them later
     )
 
     if score > 0:
-        sev = meta.get("severity_index", 0.0) or 0.0
+        sev = float((meta or {}).get("severity_index", 0.0) or 0.0)
         risk = mortality_risk(sev, eta)
+        "severity_index": sev,
         results.append({
             "facility": facility["name"],
             "score": score,
