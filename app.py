@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 
+icd_df = pd.read_csv("data/icd_catalogue.csv")
+
 from config import *
 from clinical_engine import triage_engine
 from scoring_engine import calculate_facility_score
@@ -11,6 +13,38 @@ from analytics_engine import mortality_risk, compute_dashboard_metrics
 st.set_page_config(layout="wide")
 st.title(APP_NAME)
 st.caption(APP_VERSION)
+
+# ----------------------
+# Bootstrap: data + session state (Step B)3
+# ----------------------
+@st.cache_data(show_spinner=False)
+def _load_icd_df(path: str = "data/icd_catalogue.csv") -> pd.DataFrame:
+    df = pd.read_csv(path)
+    # Normalize expected column names (defensive)
+    df.columns = [c.strip() for c in df.columns]
+    return df
+
+@st.cache_data(show_spinner=False)
+def _load_facilities_df(path: str = "data/facilities_meghalaya.csv") -> pd.DataFrame:
+    df = pd.read_csv(path)
+    df.columns = [c.strip() for c in df.columns]
+    return df
+
+# Required shared datasets (single load)
+icd_df = _load_icd_df()
+facilities_df = _load_facilities_df()
+
+# Session state primitives (single source of truth)
+if "referrals" not in st.session_state:
+    st.session_state.referrals = []
+
+if "facilities" not in st.session_state:
+    # keep both df + list-of-dicts patterns available
+    st.session_state.facilities = facilities_df.to_dict(orient="records")
+
+# Optional: keep last triage output (avoids None crashes downstream)
+if "last_triage" not in st.session_state:
+    st.session_state.last_triage = {"color": "GREEN", "meta": {"severity_index": 0}}
 
 # ----------------------
 # Clinical Input
@@ -38,10 +72,47 @@ color, meta = triage_engine(vitals, icd_row, {"age": age})
 st.subheader(f"Triage Result: {color}")
 st.json(meta)
 
+st.markdown("### 🧪 Synthetic Seeding v2 (Severity-Weighted)")
+
+cA, cB, cC = st.columns(3)
+with cA:
+    n_v2 = st.number_input("Generate v2 referrals", 100, 5000, 1000, step=100, key="seed_v2_n")
+with cB:
+    seed_v2 = st.number_input("Seed", 1, 999999, 42, step=1, key="seed_v2_seed")
+with cC:
+    append_v2 = st.checkbox("Append (don’t wipe existing)", value=True, key="seed_v2_append")
+
+if st.button("⚙️ Generate v2 dataset", key="seed_v2_run"):
+    try:
+        # icd_df must exist in your app already (from icd_catalogue.csv loader)
+        # validated_triage_decision must exist (your new hardened triage function)
+        new_refs = seed_synthetic_referrals_v2(
+            n=int(n_v2),
+            facilities=st.session_state.get("facilities", []),
+            icd_df=icd_df,  # <- ensure your ICD df variable is named icd_df
+            validated_triage_decision_fn=triage_engine,
+            now_ts_fn=now_ts,
+            rand_geo_fn=rand_geo,
+            dist_km_fn=dist_km,
+            interpolate_route_fn=interpolate_route,
+            traffic_factor_fn=traffic_factor_for_hour,
+            rng_seed=int(seed_v2),
+            append=bool(append_v2),
+        )
+
+        if not append_v2:
+            st.session_state.referrals = []
+
+        st.session_state.referrals = new_refs + st.session_state.referrals
+        st.success(f"Generated {len(new_refs)} v2 synthetic referrals. Total now: {len(st.session_state.referrals)}")
+        st.rerun()
+    except Exception as e:
+        st.error(f"v2 seeding failed: {e}")
+
 # ----------------------
 # Facility Matching
 # ----------------------
-facilities = pd.read_csv("data/facilities_meghalaya.csv")
+facilities = facilities_df("data/facilities_meghalaya.csv")
 
 src = (25.58, 91.89)
 results = []
