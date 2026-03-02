@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import altair as alt
 
 from config import *
 from clinical_engine import triage_engine
@@ -65,7 +66,9 @@ for _, row in facilities.iterrows():
             "score": score,
             "eta": eta,
             "ownership": facility["ownership"],
-            "mortality_risk": round(risk * 100, 1)
+            "triage_color": color,
+            "severity_index": meta["severity_index"],
+            "mortality_risk": risk
         })
 
 results = sorted(results, key=lambda x: x["score"], reverse=True)
@@ -74,10 +77,91 @@ st.subheader("Recommended Facilities")
 st.table(pd.DataFrame(results))
 
 # ----------------------
-# Government Analytics
+# GOVERNMENT ANALYTICS DASHBOARD
 # ----------------------
-st.subheader("System Analytics")
+
+st.subheader("Government Analytics Dashboard")
 
 if results:
-    avg_risk = sum(r["mortality_risk"] for r in results) / len(results)
-    st.metric("Avg Modeled Mortality Risk (%)", round(avg_risk, 1))
+
+    df_results = pd.DataFrame(results)
+
+    metrics = compute_dashboard_metrics(df_results)
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Referrals", metrics["total_cases"])
+    col2.metric("Avg Severity Index", metrics["avg_severity"])
+    col3.metric("Avg Modeled Mortality Risk (%)", metrics["avg_risk"])
+
+    st.markdown("---")
+
+    # --------------------
+    # TRIAGE DISTRIBUTION
+    # --------------------
+
+    triage_chart = (
+        alt.Chart(df_results)
+        .mark_bar()
+        .encode(
+            x="triage_color:N",
+            y="count():Q",
+            color="triage_color:N"
+        )
+        .properties(title="Triage Distribution")
+    )
+
+    st.altair_chart(triage_chart, use_container_width=True)
+
+    # --------------------
+    # SEVERITY DISTRIBUTION
+    # --------------------
+
+    severity_chart = (
+        alt.Chart(df_results)
+        .mark_bar()
+        .encode(
+            alt.X("severity_index:Q", bin=alt.Bin(maxbins=10)),
+            y="count():Q"
+        )
+        .properties(title="Severity Index Distribution")
+    )
+
+    st.altair_chart(severity_chart, use_container_width=True)
+
+    # --------------------
+    # ETA vs Severity SCATTER
+    # --------------------
+
+    scatter_chart = (
+        alt.Chart(df_results)
+        .mark_circle(size=100)
+        .encode(
+            x="eta:Q",
+            y="severity_index:Q",
+            color="ownership:N",
+            tooltip=["facility", "eta", "severity_index", "mortality_risk"]
+        )
+        .properties(title="ETA vs Severity (Facility Risk Surface)")
+    )
+
+    st.altair_chart(scatter_chart, use_container_width=True)
+
+    # --------------------
+    # GOVERNMENT vs PRIVATE PIE
+    # --------------------
+
+    ownership_counts = df_results["ownership"].value_counts().reset_index()
+    ownership_counts.columns = ["ownership", "count"]
+
+    pie_chart = (
+        alt.Chart(ownership_counts)
+        .mark_arc()
+        .encode(
+            theta="count:Q",
+            color="ownership:N",
+            tooltip=["ownership", "count"]
+        )
+        .properties(title="Public vs Private Utilization")
+    )
+
+    st.altair_chart(pie_chart, use_container_width=True)
