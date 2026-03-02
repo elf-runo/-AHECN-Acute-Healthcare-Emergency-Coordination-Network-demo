@@ -240,8 +240,15 @@ def validated_triage_decision(vitals: Dict[str, Any], icd_row: Dict[str, Any], c
         meows = calc_meows(hr, rr, sbp, temp, spo2)
         ews_type = "MEOWS"
         urgent = len(meows["red"]) > 0
-        score = len(meows["red"]) * 2 + len(meows["yellow"])
-        severity_index = clamp(score / 8.0, 0.0, 1.0)
+        score = len(meows["red"]) * 2 + len(meows["yellow"]) # Kept for UI display uniformity
+        
+        # Clinically weighted severity scaling (Patch)
+        # Any 'RED' parameter guarantees a baseline severity of 0.6 (Urgent), scaling up.
+        if urgent:
+            severity_index = clamp(0.6 + (len(meows["red"]) * 0.15), 0.0, 1.0)
+        else:
+            severity_index = clamp(len(meows["yellow"]) * 0.1, 0.0, 0.5)
+            
         score_details = {"MEOWS": meows}
     else:
         news = calc_news2(rr, spo2, sbp, hr, temp, avpu=avpu, o2_device=o2_device, spo2_scale=spo2_scale)
