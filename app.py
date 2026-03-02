@@ -71,99 +71,116 @@ st.subheader(pill)
 st.caption(f"Primary driver: **{meta['primary_driver']}** • {meta['reason']}")
 st.caption(f"Severity index: **{meta['severity_index']:.2f}**")
 
-# ----------------------
-# FACILITY MATCHING
-# ----------------------
+# ---------------------------------------------------------
+# FACILITY MATCHING (Gated Clinical Safety + Topography)
+# ---------------------------------------------------------
 st.markdown("---")
 st.header("Facility Matching (Gated Clinical Safety)")
 
 origin = (float(src_lat), float(src_lon))
 results = []
 
+# Safely extract variables for the Golden Hour curve
+pathology_bundle = icd_row.get("bundle", "Other")
+sev = float((meta or {}).get("severity_index", 0.0) or 0.0)
+
 for _, row in facilities_df.iterrows():
-    facility = row.to_dict()
-    eta = get_eta(origin, (float(facility["lat"]), float(facility["lon"])))
-    facility["ownership"] = str(facility.get("ownership", "Private") or "Private")
-    sev = float((meta or {}).get("severity_index", 0.0) or 0.0)
+    f_dict = row.to_dict()
+    dest = (float(f_dict.get("lat", 0.0)), float(f_dict.get("lon", 0.0)))
+    f_dict["ownership"] = str(f_dict.get("ownership", "Private") or "Private")
+    
+    # 1. ADAPTIVE TOPOGRAPHY ROUTING
+    # Gracefully falls back if routing_engine.py hasn't been updated on GitHub yet
+    try:
+        route_eta = get_eta(origin, dest, speed_kmh=40.0, is_hilly_terrain=True)
+    except TypeError:
+        route_eta = get_eta(origin, dest, speed_kmh=40.0)
 
-    score, details = calculate_facility_score(
-        facility=facility,
-        required_caps=required_caps,
-        eta=eta,
-        triage_color=triage_color,
-        severity_index=sev,
-        case_type=bundle,
-    )
+    # 2. RESILIENT SCORING ENGINE CALL
+    try:
+        score, details = calculate_facility_score(
+            facility=f_dict,
+            required_caps=required_caps,
+            eta=route_eta,
+            triage_color=triage_color,
+            severity_index=sev,
+            case_type=pathology_bundle
+        )
+    except TypeError as e:
+        # Prevents a catastrophic crash during a pitch
+        st.error("🚨 **SYSTEM ALERT: ENGINE SYNCHRONIZATION PENDING**")
+        st.warning(f"**Backend Diagnostic:** `{e}`")
+        st.info("💡 **Resolution:** Your advanced `app.py` UI is live, but Streamlit is still reading an older `scoring_engine.py` from your repository. Please ensure the latest `scoring_engine.py` (containing the new parameters) is committed and pushed to GitHub.")
+        st.stop()
 
-    if score > 0:
-        risk = mortality_risk(sev, eta)
+    # 3. ABSOLUTE CLINICAL GATE (The "Blind Dispatch" Fix)
+    if score > 0 or details.get("gate_capacity") == "WARNING_ED_STABILIZATION_ONLY":
+        
+        # 4. ADAPTIVE MORTALITY MODELING (Golden Hour Curve)
+        try:
+            m_risk = mortality_risk(sev, route_eta, pathology=pathology_bundle)
+        except TypeError:
+            m_risk = mortality_risk(sev, route_eta) # Fallback
+
         results.append({
-            "facility": facility["name"],
+            "facility": f_dict["name"],
             "score": score,
-            "eta": round(eta, 1),
-            "ownership": facility.get("ownership", "Private"),
+            "eta": round(route_eta, 1),
+            "ownership": f_dict["ownership"],
             "triage_color": triage_color,
             "severity_index": sev,
-            "mortality_risk": risk,
-            "ICU_open": int(facility.get("ICU_open", 0)),
+            "mortality_risk": m_risk,
+            "ICU_open": int(f_dict.get("ICU_open", 0)),
             "scoring_details": details,
         })
+
+# ---------------------------------------------------------
+# UI RENDERING & EXPLAINABLE AI
+# ---------------------------------------------------------
 results = sorted(results, key=lambda x: (-x["score"], x["eta"]))
 
 st.subheader("Recommended Facilities")
 if not results:
-    st.warning("No facilities passed the clinical safety gates for the selected requirements.")
+    st.error("🚨 **CRITICAL ALERT: ZERO STATEWIDE CAPACITY.**")
+    st.warning("No facilities meet the absolute minimum clinical safety gates (Capabilities/Capacity) within transit range. Initiate immediate on-site ED stabilization and escalate to State Command for out-of-network airlift.")
 else:
-    st.dataframe(pd.DataFrame([{k:v for k,v in r.items() if k!="scoring_details"} for r in results]),
-                 use_container_width=True)
+    # Render clean dataframe
+    st.dataframe(pd.DataFrame([{k:v for k,v in r.items() if k!="scoring_details"} for r in results]), use_container_width=True)
 
-    st.markdown("### Explainable Matching")
+    st.markdown("### Explainable Matching Logic")
     for i, row in enumerate(results[:6], 1):
         st.markdown(f"#### {i}. {row['facility']} — Score {row['score']}/100 — ETA {row['eta']} min")
-        # --- EXPLAINABLE MATCHING LOGIC (Drop-Down) ---
+        
         with st.expander("📊 Why was this facility recommended? (Clinical Logic)"):
             details = row.get("scoring_details", {})
 
-            # 1. The Clinical Gates (Pass/Fail)
+            # Safety Gates
             st.markdown("#### 1. Safety Gates (Absolute Mandates)")
             if details.get('gate_capability') == "PASSED":
                 st.markdown("✅ **Infrastructure Gate:** Passed. Facility possesses 100% of the requested life-saving capabilities.")
             else:
-                st.markdown("❌ **Infrastructure Gate:** Failed. Missing: " + ", ".join(details.get("capability_missing", [])))
+                st.markdown(f"❌ **Infrastructure Gate:** Failed. Missing: {', '.join(details.get('capability_missing', []))}")
 
             if details.get('gate_capacity') == "PASSED":
                 st.markdown("✅ **Capacity Gate:** Passed. Minimum required critical care beds are available.")
+            elif details.get('gate_capacity') == "WARNING_ED_STABILIZATION_ONLY":
+                st.markdown("⚠️ **Capacity Gate Override:** ICU Full. Facility selected for immediate ED Resuscitation only.")
             else:
                 st.markdown("❌ **Capacity Gate:** Failed. No ICU capacity available.")
 
-            # 2. The Weighted Matrix
+            # Weighted Matrix
             st.markdown("#### 2. Optimization Matrix (Out of 100 pts)")
-
-            eta = details.get('eta_minutes', 'N/A')
-            prox_score = details.get('proximity_score', 0)
-            st.markdown(f"🚑 **Time-to-Definitive-Care:** {eta} mins. *(Score: {prox_score}/50)*")
-
-            icu_score = details.get('icu_score', 0)
-            icu_beds = row.get('ICU_open', 0)
-            st.markdown(f"🛏️ **Surge Buffer:** {icu_beds} open beds. *(Score: {icu_score}/15)*")
-
-            spec_score = details.get('specialization_bonus', 0)
-            st.markdown(f"⭐ **Specialty Excellence:** *(Score: {spec_score}/15)*")
-
+            st.markdown(f"🚑 **Time-to-Definitive-Care:** {details.get('eta_minutes', 'N/A')} mins. *(Score: {details.get('proximity_score', 0)}/50)*")
+            st.markdown(f"🛏️ **Surge Buffer:** {row.get('ICU_open', 0)} open beds. *(Score: {details.get('icu_score', 0)}/15)*")
+            
             fiscal_score = details.get('fiscal_score', 0)
             if fiscal_score > 0:
-                st.markdown(f"🏛️ **Fiscal Guardrail:** Government facility prioritized. *(Score: {fiscal_score}/20)*")
+                st.markdown(f"🏛️ **Fiscal Guardrail:** Government facility prioritized to protect public funds. *(Score: {fiscal_score}/20)*")
             else:
-                st.markdown(f"🏥 **Fiscal Guardrail:** Private facility. *(Score: {fiscal_score}/20)*")
-
-            sev_bonus = details.get("severity_bonus", 0)
-            st.markdown(f"🧠 **Severity Bonus:** Case acuity-weighting. *(Score: {sev_bonus}/5)*")
+                st.markdown(f"🏥 **Fiscal Guardrail:** Private facility utilized. *(Score: {fiscal_score}/20)*")
 
             st.markdown("---")
-            st.markdown(
-                f"<div style='text-align: right; font-size: 1.05rem;'><strong>Algorithm Confidence Score: {row.get('score', 0)} / 100</strong></div>",
-                unsafe_allow_html=True
-            )
+            st.markdown(f"<div style='text-align: right; font-size: 1.05rem;'><strong>Algorithm Confidence Score: {row.get('score', 0)} / 100</strong></div>", unsafe_allow_html=True)
 
 # ----------------------
 # GOVERNMENT ANALYTICS DASHBOARD
