@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 import inspect, scoring_engine
-st.sidebar.write("scoring_engine path:", scoring_engine.__file__)
+st.sidebar.write("scoring_engine file:", scoring_engine.__file__)
 st.sidebar.write("calculate_facility_score sig:", str(inspect.signature(scoring_engine.calculate_facility_score)))
 
 from utils import load_icd_catalogue, load_facilities
@@ -84,19 +84,19 @@ for _, row in facilities_df.iterrows():
     facility = row.to_dict()
     eta = get_eta(origin, (float(facility["lat"]), float(facility["lon"])))
     facility["ownership"] = str(facility.get("ownership", "Private") or "Private")
+    sev = float((meta or {}).get("severity_index", 0.0) or 0.0)
+
     score, details = calculate_facility_score(
         facility=facility,
         required_caps=required_caps,
         eta=eta,
         triage_color=triage_color,
-        severity_index=float((meta or {}).get("severity_index", 0.0) or 0.0),
-        case_type=bundle,  # aligns with specialties dict keys if you add them later
+        severity_index=sev,
+        case_type=bundle,
     )
 
     if score > 0:
-        sev = float((meta or {}).get("severity_index", 0.0) or 0.0)
         risk = mortality_risk(sev, eta)
-
         results.append({
             "facility": facility["name"],
             "score": score,
@@ -108,7 +108,6 @@ for _, row in facilities_df.iterrows():
             "ICU_open": int(facility.get("ICU_open", 0)),
             "scoring_details": details,
         })
-
 results = sorted(results, key=lambda x: (-x["score"], x["eta"]))
 
 st.subheader("Recommended Facilities")
