@@ -1,16 +1,73 @@
 # scoring_engine.py
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Tuple
-import json
-import math
-import re
+from typing import Any, Dict, Iterable, List, Set, Tuple
+
+
+def _parse_caps_from_any_shape(facility: Dict[str, Any]) -> Set[str]:
+    """
+    Supports facility capability storage in multiple shapes:
+    1) Nested dict: facility["caps"] = {"ICU":1, "CT":0, ...}
+    2) String list: facility["caps"] = "ICU;CT;OR" or "ICU, CT, OR"
+    3) Flat CSV booleans: cap_ICU=1, cap_CT=0, ...
+    4) Fallback: default_caps field like "ICU;CT" (if present)
+    """
+    caps_set: Set[str] = set()
+
+    # (1) nested dict
+    caps_obj = facility.get("caps", None)
+    if isinstance(caps_obj, dict):
+        for k, v in caps_obj.items():
+            try:
+                if int(v) == 1:
+                    caps_set.add(str(k).strip())
+            except Exception:
+                # tolerate non-int values
+                if bool(v):
+                    caps_set.add(str(k).strip())
+        return caps_set
+
+    # (2) string encoded
+    if isinstance(caps_obj, str) and caps_obj.strip():
+        raw = caps_obj.replace(",", ";")
+        for token in raw.split(";"):
+            t = token.strip()
+            if t:
+                caps_set.add(t)
+        return caps_set
+
+    # (3) flat CSV-style: cap_ICU, cap_CT...
+    for k, v in facility.items():
+        if not isinstance(k, str):
+            continue
+        if k.startswith("cap_"):
+            cap_name = k.replace("cap_", "").strip()
+            try:
+                if int(v) == 1:
+                    caps_set.add(cap_name)
+            except Exception:
+                if bool(v):
+                    caps_set.add(cap_name)
+
+    if caps_set:
+        return caps_set
+
+    # (4) fallback: default_caps if present
+    default_caps = facility.get("default_caps", "")
+    if isinstance(default_caps, str) and default_caps.strip():
+        raw = default_caps.replace(",", ";")
+        for token in raw.split(";"):
+            t = token.strip()
+            if t:
+                caps_set.add(t)
+
+    return caps_set
 
 
 def severity_adjusted_proximity(eta_min: float, severity_index: float) -> float:
     """
-    Returns a proximity score out of 50, adjusted by clinical severity.
-    Higher severity -> penalize time more (i.e., effective ETA increases).
+    Simple demo-safe nonlinear penalty:
+    higher severity => ETA penalized more.
     """
     try:
         eta = float(eta_min)
@@ -22,103 +79,45 @@ def severity_adjusted_proximity(eta_min: float, severity_index: float) -> float:
     except Exception:
         sev = 0.0
 
-    # Severity index assumed 0-100; scale impacts ETA moderately
     adjusted_eta = eta * (1.0 + (sev / 100.0))
-    # Simple linear decay: 0.5 points per minute (capped)
+    # 0..50 points, falling with adjusted ETA
     return max(0.0, 50.0 - adjusted_eta * 0.5)
-
-
-def _to_caps_set(caps_raw: Any) -> set[str]:
-    """
-    Normalize facility caps into a set of capability names.
-    Supports dict, list/tuple/set, semicolon/comma separated strings, JSON strings, None/NaN.
-    """
-    if caps_raw is None:
-        return set()
-
-    # handle pandas NaN
-    try:
-        if isinstance(caps_raw, float) and math.isnan(caps_raw):
-            return set()
-    except Exception:
-        pass
-
-    # dict -> include keys where value truthy/1
-    if isinstance(caps_raw, dict):
-        out = set()
-        for k, v in caps_raw.items():
-            try:
-                ok = int(v) == 1
-            except Exception:
-                ok = bool(v)
-            if ok:
-                out.add(str(k).strip())
-        return {x for x in out if x}
-
-    # iterable -> treat elements as caps
-    if isinstance(caps_raw, (list, tuple, set)):
-        return {str(x).strip() for x in caps_raw if str(x).strip()}
-
-    # string -> try JSON dict/list, else split by delimiters
-    if isinstance(caps_raw, str):
-        s = caps_raw.strip()
-        if not s:
-            return set()
-
-        # try JSON
-        if (s.startswith("{") and s.endswith("}")) or (s.startswith("[") and s.endswith("]")):
-            try:
-                parsed = json.loads(s)
-                return _to_caps_set(parsed)
-            except Exception:
-                pass
-
-        # split by common delimiters
-        parts = re.split(r"[;,|/]+", s)
-        return {p.strip() for p in parts if p.strip()}
-
-    # fallback: unknown type
-    return set()
-
-
-def _to_required_caps(req_raw: Any) -> List[str]:
-    """
-    Normalize required_caps into a list[str].
-    Supports list, set, tuple, semicolon string, None.
-    """
-    if req_raw is None:
-        return []
-    if isinstance(req_raw, (list, tuple, set)):
-        return [str(x).strip() for x in req_raw if str(x).strip()]
-    if isinstance(req_raw, str):
-        return [x.strip() for x in re.split(r"[;,|/]+", req_raw) if x.strip()]
-    return [str(req_raw).strip()] if str(req_raw).strip() else []
 
 
 def calculate_facility_score(
     facility: Dict[str, Any],
-    required_caps: Any,
+    required_caps: List[str] | Tuple[str, ...] | Set[str],
     eta: float,
     triage_color: str,
     severity_index: float,
+    **_ignored_kwargs: Any,  # IMPORTANT: lets you pass case_type/bundle/etc without TypeError
 ) -> Tuple[float, Dict[str, Any]]:
     """
-    Gated facility scoring:
-    - Gate 1: must have all required capabilities
-    - Gate 2: if RED -> must have ICU_open >= 1
-    Then weighted scoring:
-    - proximity (0-50), ICU beds (0-15), govt bonus (0-20)
+    Demo-safe scoring (0..100):
+    - Gate 1: Must satisfy ALL required caps (if provided)
+    - Gate 2: If RED => ICU_open >= 1
+    - Score:
+        proximity_score (0..50)  [severity adjusted]
+        icu_score      (0..15)
+        gov_bonus      (0 or 20)
     """
 
-    req_caps = _to_required_caps(required_caps)
-    caps_set = _to_caps_set(facility.get("caps", None))
+    # Normalize required_caps input
+    req = [str(x).strip() for x in (required_caps or []) if str(x).strip()]
 
-    # ---------- Gate 1: capability completeness ----------
-    missing = [cap for cap in req_caps if cap not in caps_set]
-    if missing:
-        return 0.0, {"disqualified": "Missing required capability", "missing_caps": missing}
+    caps_set = _parse_caps_from_any_shape(facility)
 
-    # ---------- Gate 2: critical capacity ----------
+    # ---- Gate 1: required capabilities ----
+    if req:
+        has_all = all(cap in caps_set for cap in req)
+        if not has_all:
+            return 0.0, {
+                "disqualified": "Missing required capability",
+                "required_caps": req,
+                "facility_caps": sorted(list(caps_set))[:50],  # keep payload small
+            }
+
+    # ---- Gate 2: RED requires ICU bed ----
     icu_open = 0
     try:
         icu_open = int(facility.get("ICU_open", 0) or 0)
@@ -128,22 +127,22 @@ def calculate_facility_score(
     if str(triage_color).upper() == "RED" and icu_open < 1:
         return 0.0, {"disqualified": "No ICU capacity", "ICU_open": icu_open}
 
-    # ---------- Weighted scoring ----------
-    proximity_score = severity_adjusted_proximity(eta, severity_index)  # /50
-    icu_score = min(max(icu_open, 0) * 5.0, 15.0)  # /15
-
-    ownership = str(facility.get("ownership", "") or "").strip().lower()
-    gov_bonus = 20.0 if ownership == "government" else 0.0  # /20
+    # ---- Score components ----
+    proximity_score = severity_adjusted_proximity(eta, severity_index)  # 0..50
+    icu_score = min(max(icu_open, 0) * 5, 15)  # 0..15
+    ownership = str(facility.get("ownership", "Private")).strip()
+    gov_bonus = 20 if ownership.lower() == "government" else 0
 
     total = float(proximity_score + icu_score + gov_bonus)
+    total = round(max(0.0, min(100.0, total)), 1)
 
-    details = {
-        "proximity_score": round(proximity_score, 1),
-        "icu_score": round(icu_score, 1),
-        "gov_bonus": round(gov_bonus, 1),
-        "ICU_open": icu_open,
-        "ownership": facility.get("ownership", "Unknown"),
-        "caps_count": len(caps_set),
-        "required_caps": req_caps,
+    return total, {
+        "proximity_score": round(float(proximity_score), 1),
+        "icu_score": int(icu_score),
+        "gov_bonus": int(gov_bonus),
+        "eta": float(eta) if eta is not None else None,
+        "severity_index": float(severity_index) if severity_index is not None else None,
+        "ownership": ownership,
+        "required_caps": req,
+        "caps_detected_count": len(caps_set),
     }
-    return round(total, 1), details
