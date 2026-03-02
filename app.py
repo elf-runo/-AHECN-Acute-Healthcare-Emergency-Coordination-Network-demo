@@ -86,7 +86,7 @@ for _, row in facilities_df.iterrows():
         required_caps=required_caps,
         eta=eta,
         triage_color=triage_color,
-        severity_index=meta["severity_index"],
+        severity_index=meta.get("severity_index", 0.0),
         case_type=bundle,  # aligns with specialties dict keys if you add them later
     )
 
