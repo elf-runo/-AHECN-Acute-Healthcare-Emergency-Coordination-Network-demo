@@ -1,0 +1,10 @@
+APP_NAME = "AHECN – Acute Healthcare Emergency Coordination Network"
+APP_VERSION = "Enterprise Demo Build v1.0"
+
+DEMO_SAFE_MODE = True
+ENABLE_AI = False
+ENABLE_LIVE_ROUTING = False
+
+MAX_RESULTS = 5
+ASSUMED_AMBULANCE_SPEED_KMH = 40
+ESTIMATED_PRIVATE_CASE_COST = 75000
