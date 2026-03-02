@@ -120,15 +120,26 @@ def calculate_facility_score(
             return 0.0, details
     details["gate_capability"] = "PASSED"
 
-    # ---------------- Gate 2: critical capacity ----------------
+    # ---------------- Gate 2: critical capacity (ED Override) ----------------
     icu_open = _to_int(facility.get("ICU_open", 0), 0)
     requires_bed = ("ICU" in req) or ("Ventilator" in req) or (triage == "RED")
+    
+    # Check if facility has a baseline Emergency Department for resuscitation
+    has_ed_resus = _to_int(caps.get("ED", 1), 1) 
+
     if requires_bed and icu_open < 1:
-        details["gate_capacity"] = "FAILED"
-        details["icu_beds"] = icu_open
-        details["total_score"] = 0
-        return 0.0, details
-    details["gate_capacity"] = "PASSED"
+        if triage == "RED" and has_ed_resus >= 1:
+            # Failsafe: Allow routing for ED stabilization, but flag it so UI can warn the user
+            details["gate_capacity"] = "WARNING_ED_STABILIZATION_ONLY"
+            details["icu_beds"] = 0
+        else:
+            # Hard stop: No ICU, no ED, or not a RED priority emergency
+            details["gate_capacity"] = "FAILED"
+            details["icu_beds"] = icu_open
+            details["total_score"] = 0
+            return 0.0, details
+    else:
+        details["gate_capacity"] = "PASSED"
 
     # Severity-adjust ETA
     adjusted_eta = eta_min * (1.0 + sev)
