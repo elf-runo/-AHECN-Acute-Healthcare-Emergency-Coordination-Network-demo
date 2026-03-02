@@ -38,7 +38,7 @@ def _normalize_required_caps(required_caps: Any) -> List[str]:
 
 
 def _parse_caps_kv_string(caps_str: str) -> Dict[str, int]:
-    # Parses: "ICU=1;Ventilator=1;BloodBank=0" -> {"ICU":1, "Ventilator":1, "BloodBank":0}
+    # "ICU=1;Ventilator=1;BloodBank=0" -> {"ICU":1, "Ventilator":1, "BloodBank":0}
     out: Dict[str, int] = {}
     if not caps_str:
         return out
@@ -76,8 +76,21 @@ def calculate_facility_score(
     triage_color: str,
     severity_index: Any,
     case_type: Optional[str] = None,
-    **kwargs: Any,  # IMPORTANT: prevents call-site TypeError forever
+    **kwargs: Any,  # critical: prevents call-site TypeError forever
 ) -> Tuple[float, Dict[str, Any]]:
+    """
+    Gated + explainable facility scoring.
+
+    Gate 1: MUST have 100% of required_caps.
+    Gate 2: If RED or ICU/Vent required => ICU_open >= 1.
+
+    Score (max 100):
+      - Time-to-definitive-care (ETA adjusted by severity): 50
+      - ICU surge buffer: 15
+      - Specialty bonus: 0 (reserved for later)
+      - Fiscal guardrail (Gov): 20
+      - Severity tie-break bonus: 5
+    """
     details: Dict[str, Any] = {}
 
     req = _normalize_required_caps(required_caps)
@@ -89,13 +102,15 @@ def calculate_facility_score(
         eta_min = 999.0
 
     triage = (triage_color or "GREEN").upper()
+
+    # severity expected 0..1 from clinical_engine
     try:
-        sev = float(severity_index or 0.0)  # 0..1 expected
+        sev = float(severity_index or 0.0)
     except Exception:
         sev = 0.0
     sev = max(0.0, min(1.0, sev))
 
-    # Gate 1: 100% capabilities
+    # Gate 1: capabilities
     if req:
         missing = [c for c in req if _to_int(caps.get(c, 0), 0) != 1]
         if missing:
@@ -105,7 +120,7 @@ def calculate_facility_score(
             return 0.0, details
     details["gate_capability"] = "PASSED"
 
-    # Gate 2: ICU for RED / ICU / Vent
+    # Gate 2: ICU capacity
     icu_open = _to_int(facility.get("ICU_open", 0), 0)
     requires_bed = ("ICU" in req) or ("Ventilator" in req) or (triage == "RED")
     if requires_bed and icu_open < 1:
@@ -115,10 +130,10 @@ def calculate_facility_score(
         return 0.0, details
     details["gate_capacity"] = "PASSED"
 
-    # Severity-adjusted ETA (increases delay penalty for higher acuity)
+    # Severity-adjusted ETA
     adjusted_eta = eta_min * (1.0 + sev)
 
-    # 1) TDC proximity score (0..50)
+    # Proximity / TDC (0..50)
     if adjusted_eta <= 30:
         prox = 50
     elif adjusted_eta <= 60:
@@ -128,7 +143,7 @@ def calculate_facility_score(
     else:
         prox = 0
 
-    # 2) ICU surge buffer (0..15)
+    # ICU surge buffer (0..15)
     if icu_open >= 3:
         icu_score = 15
     elif icu_open == 2:
@@ -138,14 +153,14 @@ def calculate_facility_score(
     else:
         icu_score = 0
 
-    # 3) Specialty bonus (0..15) – off until you add specialties dict
+    # Specialty bonus (reserved)
     spec_score = 0
 
-    # 4) Fiscal guardrail (0..20)
+    # Fiscal guardrail (0..20)
     ownership = str(facility.get("ownership", "Private") or "Private").strip()
     fiscal_score = 20 if ownership.lower() == "government" else 0
 
-    # Small severity bonus (0..5) for tie-breaking
+    # Severity tie-break (0..5)
     severity_bonus = int(round(sev * 5))
 
     total = prox + icu_score + spec_score + fiscal_score + severity_bonus
