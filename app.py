@@ -80,7 +80,7 @@ results = []
 for _, row in facilities_df.iterrows():
     facility = row.to_dict()
     eta = get_eta(origin, (float(facility["lat"]), float(facility["lon"])))
-
+    facility["ownership"] = str(facility.get("ownership", "Private") or "Private")
     score, details = calculate_facility_score(
         facility=facility,
         required_caps=required_caps,
