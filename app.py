@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import altair as alt
 
-icd_df = pd.read_csv("data/icd_catalogue.csv")
 
 from config import *
 from clinical_engine import triage_engine
@@ -112,7 +111,7 @@ if st.button("⚙️ Generate v2 dataset", key="seed_v2_run"):
 # ----------------------
 # Facility Matching
 # ----------------------
-facilities = facilities_df("data/facilities_meghalaya.csv")
+facilities = facilities_df
 
 src = (25.58, 91.89)
 results = []
@@ -152,6 +151,26 @@ st.table(pd.DataFrame(results))
 # ----------------------
 
 st.subheader("Government Analytics Dashboard")
+# ---- Referral-derived analytics (2C integration) ----
+ref_rows = []
+for ref in st.session_state.get("referrals", []):
+    severity_index = (
+        (ref.get("triage", {}).get("decision", {}).get("score_details", {}) or {})
+        .get("severity_index", None)
+    )
+    triage_color = ref.get("triage", {}).get("decision", {}).get("color", "GREEN")
+    eta = ref.get("transport", {}).get("eta_min", None)
+    ownership = ref.get("facility_ownership", "Private")  # if you store it per referral
+
+    ref_rows.append({
+        "id": ref.get("id"),
+        "triage_color": triage_color,
+        "severity_index": severity_index,
+        "eta": eta,
+        "ownership": ownership,
+    })
+
+ref_df = pd.DataFrame(ref_rows)
 
 if results:
 
