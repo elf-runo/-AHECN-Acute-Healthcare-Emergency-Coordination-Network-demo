@@ -96,12 +96,12 @@ for _, row in facilities_df.iterrows():
     if score > 0:
         sev = float((meta or {}).get("severity_index", 0.0) or 0.0)
         risk = mortality_risk(sev, eta)
-        "severity_index": sev,
+
         results.append({
             "facility": facility["name"],
             "score": score,
             "eta": round(eta, 1),
-            "ownership": facility.get("ownership","Private"),
+            "ownership": facility.get("ownership", "Private"),
             "triage_color": triage_color,
             "severity_index": sev,
             "mortality_risk": risk,
