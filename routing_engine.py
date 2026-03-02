@@ -1,10 +1,4 @@
-"""
-routing_engine.py
-Demo-safe routing: uses straight-line Haversine distance to estimate ETA.
-
-This avoids reliance on public OSRM during demos.
-"""
-
+# routing_engine.py
 from __future__ import annotations
 from typing import Tuple
 import math
@@ -20,11 +14,6 @@ def haversine_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
     return 2*r*math.asin(math.sqrt(h))
 
 def get_eta(origin: Tuple[float, float], dest: Tuple[float, float], speed_kmh: float = 40.0) -> float:
-    """
-    Returns ETA in minutes using haversine distance / assumed speed.
-    """
     km = haversine_km(origin, dest)
-    if speed_kmh <= 0:
-        speed_kmh = 40.0
-    minutes = (km / speed_kmh) * 60.0
-    return max(1.0, minutes)
+    speed_kmh = speed_kmh if speed_kmh > 0 else 40.0
+    return max(1.0, (km / speed_kmh) * 60.0)
